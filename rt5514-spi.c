@@ -43,7 +43,7 @@
 #define CHANNEL_NUMBER 2  // Mono:1,Stereo:2
 #define DATA_LENGTH 2         // 16-bit:1  24-bit/32-bit:2
 #define COPY_WORK_DIV CHANNEL_NUMBER*DATA_LENGTH
-#define RECORD_SHIFT  16000
+#define RECORD_SHIFT  12000
 
 static atomic_t is_spi_ready = ATOMIC_INIT(0);
 
@@ -67,6 +67,7 @@ struct rt5514_dsp {
 	struct wake_lock wake_lock;
 	struct input_dev *input_dev;
 	struct delayed_work wake_work;
+	int fw_buf_level;
 };
 
 int rt5514_spi_read_addr(unsigned int addr, unsigned int *val)
@@ -138,7 +139,8 @@ static const struct snd_pcm_hardware rt5514_spi_pcm_hardware = {
 	.info			= SNDRV_PCM_INFO_MMAP |
 				  SNDRV_PCM_INFO_MMAP_VALID |
 				  SNDRV_PCM_INFO_INTERLEAVED,
-	.formats		= SNDRV_PCM_FMTBIT_S32_LE,
+	.formats		= SNDRV_PCM_FMTBIT_S24_LE |
+				  SNDRV_PCM_FMTBIT_S32_LE, 
 	.period_bytes_min	= PAGE_SIZE,
 	.period_bytes_max	= 0x20000 / 8,
 	.periods_min		= 8,
@@ -156,7 +158,8 @@ static struct snd_soc_dai_driver rt5514_spi_dai = {
 		.channels_min = 2,
 		.channels_max = 2,
 		.rates = SNDRV_PCM_RATE_16000,
-		.formats = SNDRV_PCM_FMTBIT_S32_LE,
+		.formats = SNDRV_PCM_FMTBIT_S24_LE |
+			   SNDRV_PCM_FMTBIT_S32_LE,
 	},
 };
 
@@ -193,6 +196,22 @@ static int rt5514_spi_time_sync(int num,int type)
 		pr_info("%s -- Stop time syncing when dsp is in idle mode.\n", __func__);
 
 	return 0;
+}
+
+static void rt5514_dsp_speed_up(void)
+{
+	/* Increase dsp clock(div1) */
+	rt5514_spi_write_addr(0x18001100, 0x3821f);
+	/* Disable DSP clk auto switch */
+	rt5514_spi_write_addr(0x18001114, 0x0);
+}
+
+static void rt5514_dsp_speed_down(void)
+{
+	/* Enable DSP clk auto switch */
+	rt5514_spi_write_addr(0x18001114, 0x1);
+	/* Decrease dsp clock(div2) */
+	rt5514_spi_write_addr(0x18001100, 0x3823f);
 }
 
 static void rt5514_spi_copy_work(struct work_struct *work)
@@ -305,8 +324,6 @@ static void rt5514_schedule_copy(struct rt5514_dsp *rt5514_dsp)
 		sizeof(buf));
 	rt5514_dsp->buf_rp = buf[0] | buf[1] << 8 | buf[2] << 16 |
 				buf[3] << 24;
-	rt5514_dsp->buf_rp = rt5514_dsp->buf_rp + RECORD_SHIFT;
-
 	/* To avoid rp out of valid memory region */
 	if (rt5514_dsp->buf_rp + RECORD_SHIFT <= rt5514_dsp->buf_limit) {
 		rt5514_dsp->buf_rp = rt5514_dsp->buf_rp + RECORD_SHIFT;
@@ -316,18 +333,20 @@ static void rt5514_schedule_copy(struct rt5514_dsp *rt5514_dsp)
 	}
 	/* To avoid rp out of valid memory region */
 
+#if 0
 	if (rt5514_dsp->buf_rp % 8)
 		rt5514_dsp->buf_rp = (rt5514_dsp->buf_rp / 8) * 8;
-
+#endif
 	rt5514_dsp->buf_size = rt5514_dsp->buf_limit - rt5514_dsp->buf_base;
 
 	if (likely(tic_per_sample)) {
+
 		buf_diff_sample = (rt5514_dsp->AEC_hotword.RTC_Current - rt5514_dsp->AEC_hotword.RTC_BufferWP)/
 			tic_per_sample;
 
 		rt5514_dsp->ts_buf_start = ts_AEC1_wp -
-			((((s64)(rt5514_dsp->buf_size) / 8) + buf_diff_sample) * ns_per_sample)+
-			((RECORD_SHIFT/8) * ns_per_sample);
+			((((s64)(rt5514_dsp->buf_size) / 6) + buf_diff_sample) * ns_per_sample)+
+			( (RECORD_SHIFT/6) * ns_per_sample);
 
 		timestamp = rt5514_dsp->ts_buf_start;
 
@@ -342,6 +361,7 @@ static void rt5514_schedule_copy(struct rt5514_dsp *rt5514_dsp)
 		rt5514_dsp->buf_size = (rt5514_dsp->buf_size / period_bytes) *
 			period_bytes;
 
+	rt5514_dsp_speed_up();
 	if (rt5514_dsp->buf_base && rt5514_dsp->buf_limit &&
 		rt5514_dsp->buf_rp && rt5514_dsp->buf_size)
 		schedule_delayed_work(&rt5514_dsp->copy_work,
@@ -381,7 +401,7 @@ static void rt5514_schedule_get_dsp_tic_ns(struct rt5514_dsp *rt5514_dsp)
 	tic_per_byte = (rt5514_dsp->AEC1.Diff_T + rt5514_dsp->AEC2.Diff_T) /
 		(rt5514_dsp->AEC1.Diff_WP + rt5514_dsp->AEC2.Diff_WP);
 
-	tic_per_sample = tic_per_byte * 4;
+	tic_per_sample = tic_per_byte * 3;
 
 	pr_info("%s(): tic_per_byte:%d,tic_per_sample:%d\n", __func__,tic_per_byte,tic_per_sample);
 	pr_info("%s(): ns_per_tic:%d,ns_per_sample:%d\n", __func__,ns_per_tic,ns_per_sample);
@@ -460,6 +480,7 @@ static void rt5514_helper(struct rt5514_dsp *rt5514_dsp)
 		} else {
 			pr_info("%s(%d) -- 3\n", __func__, __LINE__);
 			rt5514_spi_burst_read(0x4ff60000, (u8 *)&AEC, sizeof(Params_AEC));
+			rt5514_spi_read_addr(0x4ff60014,&rt5514_dsp->fw_buf_level);
 			rt5514_dsp->ts_wp_soc = timestamp;
 			rt5514_dsp->AEC_hotword = AEC;
 
@@ -550,6 +571,7 @@ static int rt5514_spi_hw_free(struct snd_pcm_substream *substream)
 	cancel_delayed_work_sync(&rt5514_dsp->copy_work);
 
 	rt5514_spi_burst_write(0x18002e04, buf, 8);
+	rt5514_dsp_speed_down();
 
 	return snd_pcm_lib_free_vmalloc_buffer(substream);
 }
