@@ -281,6 +281,7 @@ struct rt5514_priv {
 	int dsp_tic_ns;
 	int hotword_trig;
 	int dsp_core_reset;
+	int irq_reset;
 	u8 *model_buf;
 	unsigned int model_len;
 	unsigned int pll3_cal_value;

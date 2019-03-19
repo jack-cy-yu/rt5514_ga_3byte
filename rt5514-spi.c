@@ -16,13 +16,8 @@
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
-#include <linux/irq.h>
-#include <linux/slab.h>
-#include <linux/gpio.h>
-#include <linux/sched.h>
-#include <linux/uaccess.h>
 #include <linux/regulator/consumer.h>
-#include <linux/pm_qos.h>
+#include <linux/pm_wakeirq.h>
 #include <linux/sysfs.h>
 #include <linux/clk.h>
 #include <linux/of_irq.h>
@@ -30,12 +25,6 @@
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
-#include <sound/soc-dapm.h>
-#include <sound/initval.h>
-#include <sound/tlv.h>
-
-#include <linux/input.h>
-#include <linux/wakelock.h>
 
 #include "rt5514.h"
 #include "rt5514-spi.h"
@@ -64,7 +53,6 @@ struct rt5514_dsp {
 	size_t buf_size, get_size, dma_offset;
 	Params_AEC AEC1, AEC2,AEC_hotword;
 	s64 ts1, ts2, ts_buf_start,ts_wp_soc;
-	struct wake_lock wake_lock;
 	struct input_dev *input_dev;
 	struct delayed_work wake_work;
 	int fw_buf_level;
@@ -135,12 +123,17 @@ int rt5514_spi_write_addr(unsigned int addr, unsigned int val)
 	return status;
 }
 
+void rt5514_set_irq_low(void)
+{
+	rt5514_spi_write_addr(0x18002e04, 0x0);
+}
+
 static const struct snd_pcm_hardware rt5514_spi_pcm_hardware = {
 	.info			= SNDRV_PCM_INFO_MMAP |
 				  SNDRV_PCM_INFO_MMAP_VALID |
 				  SNDRV_PCM_INFO_INTERLEAVED,
-	.formats		= SNDRV_PCM_FMTBIT_S24_LE |
-				  SNDRV_PCM_FMTBIT_S32_LE, 
+	.formats		= SNDRV_PCM_FMTBIT_S24_3LE |
+				  SNDRV_PCM_FMTBIT_S32_LE,
 	.period_bytes_min	= PAGE_SIZE,
 	.period_bytes_max	= 0x20000 / 8,
 	.periods_min		= 8,
@@ -158,7 +151,7 @@ static struct snd_soc_dai_driver rt5514_spi_dai = {
 		.channels_min = 2,
 		.channels_max = 2,
 		.rates = SNDRV_PCM_RATE_16000,
-		.formats = SNDRV_PCM_FMTBIT_S24_LE |
+		.formats = SNDRV_PCM_FMTBIT_S24_3LE |
 			   SNDRV_PCM_FMTBIT_S32_LE,
 	},
 };
@@ -296,7 +289,6 @@ static void rt5514_schedule_copy(struct rt5514_dsp *rt5514_dsp)
 	s64 ts_AEC1_wp;
 
 	if (!rt5514_dsp->substream) {
-		rt5514_spi_burst_write(0x18002e04, buf, 8);
 		return;
 	}
 
@@ -324,6 +316,7 @@ static void rt5514_schedule_copy(struct rt5514_dsp *rt5514_dsp)
 		sizeof(buf));
 	rt5514_dsp->buf_rp = buf[0] | buf[1] << 8 | buf[2] << 16 |
 				buf[3] << 24;
+
 	/* To avoid rp out of valid memory region */
 	if (rt5514_dsp->buf_rp + RECORD_SHIFT <= rt5514_dsp->buf_limit) {
 		rt5514_dsp->buf_rp = rt5514_dsp->buf_rp + RECORD_SHIFT;
@@ -340,13 +333,12 @@ static void rt5514_schedule_copy(struct rt5514_dsp *rt5514_dsp)
 	rt5514_dsp->buf_size = rt5514_dsp->buf_limit - rt5514_dsp->buf_base;
 
 	if (likely(tic_per_sample)) {
-
 		buf_diff_sample = (rt5514_dsp->AEC_hotword.RTC_Current - rt5514_dsp->AEC_hotword.RTC_BufferWP)/
 			tic_per_sample;
 
 		rt5514_dsp->ts_buf_start = ts_AEC1_wp -
 			((((s64)(rt5514_dsp->buf_size) / 6) + buf_diff_sample) * ns_per_sample)+
-			( (RECORD_SHIFT/6) * ns_per_sample);
+			((RECORD_SHIFT/6) * ns_per_sample);
 
 		timestamp = rt5514_dsp->ts_buf_start;
 
@@ -372,7 +364,7 @@ static void rt5514_schedule_get_dsp_tic_ns(struct rt5514_dsp *rt5514_dsp)
 {
 	int tic_per_byte, dmic_l_val,dmic_r_val,dmic_l_mute,dmic_r_mute;
 
-	rt5514_spi_write_addr(0x18002e04, 0x0);
+	rt5514_set_irq_low();
 
 	/* Mute dmic during calculate dsp ti ns */
 	rt5514_spi_read_addr(0x18002190,&dmic_l_val);
@@ -432,6 +424,8 @@ static void rt5514_watchdog_work(struct work_struct *work)
 	pr_info("%s -- watchdog work!\n", __func__);
 	rt5514_dsp_reload_fw(0);
 	rt5514_dsp_reload_fw(1);
+
+	enable_irq(gpio_hotword);
 }
 
 static void rt5514_helper(struct rt5514_dsp *rt5514_dsp)
@@ -457,8 +451,11 @@ static void rt5514_helper(struct rt5514_dsp *rt5514_dsp)
 		schedule_delayed_work(&rt5514_dsp->watchdog_work,
 				msecs_to_jiffies(0));
 	} else {
+		rt5514_set_irq_low();
+
+		enable_irq(gpio_hotword);
+
 		if (time_sync) {
-			rt5514_spi_write_addr(0x18002e04, 0x0);
 			if (rt5514_dsp->time_syncing) {
 
 				rt5514_spi_burst_read(0x4ff60000, (u8 *)&AEC, sizeof(Params_AEC));
@@ -497,9 +494,6 @@ static void rt5514_wake_work(struct work_struct *work)
 	struct rt5514_dsp *rt5514_dsp =
 		container_of(work, struct rt5514_dsp, wake_work.work);
 
-	if (!wake_lock_active(&(rt5514_dsp->wake_lock)))
-		wake_lock_timeout(&(rt5514_dsp->wake_lock), msecs_to_jiffies(100*HZ));
-
 	dev_info(&rt5514_spi->dev, "%s Send key event\n", __func__);
 
 	input_report_key(rt5514_dsp->input_dev, 116, 1);
@@ -514,6 +508,10 @@ static void rt5514_wake_work(struct work_struct *work)
 static irqreturn_t rt5514_spi_hotword_irq(int irq, void *data)
 {
 	struct rt5514_dsp *rt5514_dsp = data;
+
+	disable_irq_nosync(gpio_hotword);
+
+	pm_wakeup_event(rt5514_dsp->dev, 500);
 
 	if (atomic_read(&is_spi_ready) == 0) {
 		pr_info("%s Skip, wait spi driver resume\n", __func__);
@@ -569,8 +567,8 @@ static int rt5514_spi_hw_free(struct snd_pcm_substream *substream)
 	mutex_unlock(&rt5514_dsp->dma_lock);
 
 	cancel_delayed_work_sync(&rt5514_dsp->copy_work);
+	rt5514_set_irq_low();
 
-	rt5514_spi_burst_write(0x18002e04, buf, 8);
 	rt5514_dsp_speed_down();
 
 	return snd_pcm_lib_free_vmalloc_buffer(substream);
@@ -638,19 +636,20 @@ static int rt5514_spi_pcm_probe(struct snd_soc_platform *platform)
 		return -1;
 	}
 
-	dev_err(&rt5514_spi->dev, "hotword-irq:%d\n", gpio_hotword);
 	if (gpio_hotword) {
 		ret = devm_request_threaded_irq(&rt5514_spi->dev,
 			gpio_hotword, NULL, rt5514_spi_hotword_irq,
 			IRQF_TRIGGER_RISING | IRQF_ONESHOT, "rt5514-spi-hot",
 			rt5514_dsp);
-		if (ret)
+		if (ret) {
 			dev_err(&rt5514_spi->dev,
 				"%s Failed to reguest IRQ: %d\n", __func__,
 				ret);
+		} else {
+			device_init_wakeup(&rt5514_spi->dev, true);
+			dev_pm_set_wake_irq(&rt5514_spi->dev, gpio_hotword);
+		}
 	}
-
-	wake_lock_init(&rt5514_dsp->wake_lock, WAKE_LOCK_SUSPEND, "hotwordtrigger");
 
 	rt5514_dsp->input_dev = input_allocate_device();
 	if (rt5514_dsp->input_dev) {
@@ -841,8 +840,6 @@ static int rt5514_spi_probe(struct spi_device *spi)
 		return ret;
 	}
 
-	device_init_wakeup(&spi->dev, true);
-
 	return 0;
 }
 
@@ -851,11 +848,6 @@ static int rt5514_suspend(struct device *dev)
 	struct snd_soc_platform *platform = snd_soc_lookup_platform(dev);
 	struct rt5514_dsp *rt5514_dsp =
 		snd_soc_platform_get_drvdata(platform);
-	int irq = to_spi_device(dev)->irq;
-
-	if (device_may_wakeup(dev))
-		enable_irq_wake(irq);
-
 
 	if (rt5514_dsp)
 		atomic_set(&is_spi_ready, 0);
@@ -868,11 +860,7 @@ static int rt5514_resume(struct device *dev)
 	struct snd_soc_platform *platform = snd_soc_lookup_platform(dev);
 	struct rt5514_dsp *rt5514_dsp =
 		snd_soc_platform_get_drvdata(platform);
-	int irq = to_spi_device(dev)->irq;
 	u8 buf[8];
-
-	if (device_may_wakeup(dev))
-		disable_irq_wake(irq);
 
 	if (rt5514_dsp) {
 		atomic_set(&is_spi_ready, 1);
@@ -888,9 +876,7 @@ static int rt5514_resume(struct device *dev)
 	return 0;
 }
 
-static const struct dev_pm_ops rt5514_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(rt5514_suspend, rt5514_resume)
-};
+static SIMPLE_DEV_PM_OPS(rt5514_pm_ops, rt5514_suspend, rt5514_resume);
 
 static const struct of_device_id rt5514_of_match[] = {
 	{ .compatible = "realtek,rt5514-spi", },
