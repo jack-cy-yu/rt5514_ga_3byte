@@ -31,7 +31,7 @@
 
 #define CHANNEL_NUMBER 2  // Mono:1,Stereo:2
 #define DATA_LENGTH 2         // 16-bit:1  24-bit/32-bit:2
-#define COPY_WORK_DIV CHANNEL_NUMBER*DATA_LENGTH
+#define COPY_WORK_DIV (CHANNEL_NUMBER*DATA_LENGTH)
 #define RECORD_SHIFT  12000
 
 static atomic_t is_spi_ready = ATOMIC_INIT(0);
