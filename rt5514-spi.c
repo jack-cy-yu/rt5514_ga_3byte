@@ -29,9 +29,6 @@
 #include "rt5514.h"
 #include "rt5514-spi.h"
 
-#define CHANNEL_NUMBER 2  // Mono:1,Stereo:2
-#define DATA_LENGTH 2         // 16-bit:1  24-bit/32-bit:2
-#define COPY_WORK_DIV (CHANNEL_NUMBER*DATA_LENGTH)
 #define RECORD_SHIFT  12000
 
 static atomic_t is_spi_ready = ATOMIC_INIT(0);
@@ -57,6 +54,24 @@ struct rt5514_dsp {
 	struct delayed_work wake_work;
 	int fw_buf_level;
 };
+
+static inline int cal_copy_delay(struct rt5514_dsp *rt5514_dsp, int remain_data)
+{
+	if (rt5514_dsp->get_size < rt5514_dsp->buf_size) {
+		pr_info_once("speed up man~~%d %d\n", rt5514_dsp->get_size, rt5514_dsp->buf_size);
+		return 0;
+	} else {
+		struct snd_pcm_runtime *runtime = rt5514_dsp->substream->runtime;
+		size_t period_bytes = snd_pcm_lib_period_bytes(rt5514_dsp->substream);
+		ssize_t need_sample = bytes_to_samples(runtime, ((period_bytes - remain_data)/runtime->channels));
+		int sample_per_msec = runtime->rate/1000;
+		int need_msec = ((need_sample + sample_per_msec) / sample_per_msec);
+
+		pr_info_ratelimited("slow down man~~ %d - %d, %d, %d ch=%d rt=%d\n",
+			period_bytes, remain_data, need_sample, need_msec, runtime->channels, runtime->rate);
+		return msecs_to_jiffies(need_msec);
+	}
+}
 
 int rt5514_spi_read_addr(unsigned int addr, unsigned int *val)
 {
@@ -213,7 +228,7 @@ static void rt5514_spi_copy_work(struct work_struct *work)
 		container_of(work, struct rt5514_dsp, copy_work.work);
 	struct snd_pcm_runtime *runtime;
 	size_t period_bytes, truncated_bytes = 0;
-	unsigned int cur_wp, remain_data;
+	unsigned int cur_wp, remain_data = 0;
 	u8 buf[8];
 
 	mutex_lock(&rt5514_dsp->dma_lock);
@@ -240,7 +255,7 @@ static void rt5514_spi_copy_work(struct work_struct *work)
 
 		if (remain_data < period_bytes) {
 			schedule_delayed_work(&rt5514_dsp->copy_work,
-				msecs_to_jiffies(50/COPY_WORK_DIV));
+				cal_copy_delay(rt5514_dsp, remain_data));
 			goto done;
 		}
 	}
@@ -275,7 +290,8 @@ static void rt5514_spi_copy_work(struct work_struct *work)
 
 	snd_pcm_period_elapsed(rt5514_dsp->substream);
 
-	schedule_delayed_work(&rt5514_dsp->copy_work, msecs_to_jiffies(50/COPY_WORK_DIV));
+	schedule_delayed_work(&rt5514_dsp->copy_work,
+		cal_copy_delay(rt5514_dsp, period_bytes));
 
 done:
 	mutex_unlock(&rt5514_dsp->dma_lock);
