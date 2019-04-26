@@ -39,6 +39,10 @@ static struct spi_device *rt5514_spi;
 static int gpio_hotword;
 static int ns_per_tic,ns_per_sample,tic_per_sample;
 
+static bool hot_en = 1;
+module_param(hot_en, bool, 0664);
+MODULE_PARM_DESC(hot_en, "Hotword detection switch");
+
 static unsigned long long timestamp = 0;
 
 struct rt5514_dsp {
@@ -141,6 +145,21 @@ int rt5514_spi_write_addr(unsigned int addr, unsigned int val)
 void rt5514_set_irq_low(void)
 {
 	rt5514_spi_write_addr(0x18002e04, 0x0);
+}
+
+void rt5514_hotdet(bool en)
+{
+	if (hot_en) {
+		pr_info("%s: %s hotword detection\n", __func__, (en?"Enable":"Disable"));
+
+		if (en) {
+			/* Set 0x18002fac to 1 to enable Google engine detection */
+			rt5514_spi_write_addr(0x18002fac, 0x1);
+		} else {
+			/* Set 0x18002fac to 0 to disable Google engine detection */
+			rt5514_spi_write_addr(0x18002fac, 0x0);
+		}
+	}
 }
 
 static const struct snd_pcm_hardware rt5514_spi_pcm_hardware = {
@@ -305,6 +324,7 @@ static void rt5514_schedule_copy(struct rt5514_dsp *rt5514_dsp)
 	s64 ts_AEC1_wp;
 
 	if (!rt5514_dsp->substream) {
+		rt5514_hotdet(1);
 		return;
 	}
 
@@ -492,6 +512,9 @@ static void rt5514_helper(struct rt5514_dsp *rt5514_dsp)
 			}
 		} else {
 			pr_info("%s(%d) -- 3\n", __func__, __LINE__);
+
+			rt5514_hotdet(0);
+
 			rt5514_spi_burst_read(0x4ff60000, (u8 *)&AEC, sizeof(Params_AEC));
 			rt5514_spi_read_addr(0x4ff60014,&rt5514_dsp->fw_buf_level);
 			rt5514_dsp->ts_wp_soc = timestamp;
@@ -583,6 +606,9 @@ static int rt5514_spi_hw_free(struct snd_pcm_substream *substream)
 	mutex_unlock(&rt5514_dsp->dma_lock);
 
 	cancel_delayed_work_sync(&rt5514_dsp->copy_work);
+
+	rt5514_hotdet(1);
+
 	rt5514_set_irq_low();
 
 	rt5514_dsp_speed_down();

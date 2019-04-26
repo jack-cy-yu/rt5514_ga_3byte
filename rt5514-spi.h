@@ -52,5 +52,6 @@ int rt5514_spi_burst_read(unsigned int addr, u8 *rxbuf, size_t len);
 int rt5514_spi_burst_write(u32 addr, const u8 *txbuf, size_t len);
 int rt5514_spi_write_addr(unsigned int addr, unsigned int val);
 void rt5514_set_irq_low(void);
+void rt5514_hotdet(bool en);
 
 #endif /* __RT5514_SPI_H__ */

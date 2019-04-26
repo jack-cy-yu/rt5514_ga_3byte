@@ -35,7 +35,7 @@
 #include "rt5514-spi.h"
 #endif
 
-#define VERSION "0.1.11"
+#define VERSION "0.1.12"
 int dsp_idle_mode_on = 0;
 struct snd_soc_codec *global_codec;
 EXPORT_SYMBOL(dsp_idle_mode_on);
@@ -612,9 +612,11 @@ static int rt5514_irq_reset_put(struct snd_kcontrol *kcontrol,
 	struct rt5514_priv *rt5514 = snd_soc_component_get_drvdata(component);
 
 	rt5514->irq_reset = ucontrol->value.integer.value[0];
-	if (rt5514->irq_reset){
+	if (rt5514->irq_reset) {
 		rt5514_set_irq_low();
 		pr_info("IRQ reset\n");
+
+		rt5514_hotdet(1);
 	}
 
 	return 0;
