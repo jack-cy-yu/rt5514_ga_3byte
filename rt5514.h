@@ -211,6 +211,7 @@
 #define RT5514_AD_DMIC_MIX_BIT			11
 #define RT5514_AD_AD_MIX			(0x1 << 10)
 #define RT5514_AD_AD_MIX_BIT			10
+#define RT5514_D0_LRCH_BOOST_SFT		8
 #define RT5514_AD_AD_MUTE			(0x1 << 7)
 #define RT5514_AD_AD_MUTE_BIT			7
 #define RT5514_AD_GAIN_MASK			(0x3f << 1)
@@ -282,6 +283,7 @@ struct rt5514_priv {
 	int hotword_trig;
 	int dsp_core_reset;
 	int irq_reset;
+	int sw_boost;
 	u8 *model_buf;
 	unsigned int model_len;
 	unsigned int pll3_cal_value;

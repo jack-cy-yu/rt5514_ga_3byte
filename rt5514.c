@@ -35,7 +35,7 @@
 #include "rt5514-spi.h"
 #endif
 
-#define VERSION "0.1.12"
+#define VERSION "0.1.13"
 int dsp_idle_mode_on = 0;
 struct snd_soc_codec *global_codec;
 EXPORT_SYMBOL(dsp_idle_mode_on);
@@ -254,7 +254,14 @@ static const DECLARE_TLV_DB_RANGE(bst_tlv,
 	8, 8, TLV_DB_SCALE_ITEM(1700, 0, 0)
 );
 
+static const char *rt5514_boost_mode[] = {
+	"0dB", "6dB", "12dB", "18dB", "24dB"
+};
+
+static const SOC_ENUM_SINGLE_DECL(rt5514_sw_boost_enum, 0, 0,
+	rt5514_boost_mode);
 static const DECLARE_TLV_DB_SCALE(adc_vol_tlv, -1725, 75, 0);
+static const DECLARE_TLV_DB_SCALE(ch_bst_tlv, 0, 1200, 0);
 
 static int rt5514_dsp_voice_wake_up_get(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
@@ -315,6 +322,17 @@ static int rt5514_irq_reset_get(struct snd_kcontrol *kcontrol,
 	struct rt5514_priv *rt5514 = snd_soc_component_get_drvdata(component);
 
 	ucontrol->value.integer.value[0] = rt5514->irq_reset;
+	return 0;
+}
+
+static int rt5514_sw_boost_get(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct rt5514_priv *rt5514 = snd_soc_component_get_drvdata(component);
+
+	ucontrol->value.integer.value[0] = rt5514->sw_boost;
+
 	return 0;
 }
 
@@ -622,6 +640,27 @@ static int rt5514_irq_reset_put(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
+static int rt5514_sw_boost_put(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct rt5514_priv *rt5514 = snd_soc_component_get_drvdata(component);
+
+	rt5514->sw_boost = ucontrol->value.integer.value[0];
+	if (rt5514->sw_boost == 0)
+		regmap_write(rt5514->i2c_regmap, 0x18002fb0, 0x0);
+	else if (rt5514->sw_boost == 1)
+		regmap_write(rt5514->i2c_regmap, 0x18002fb0, 0x1);
+	else if (rt5514->sw_boost == 2)
+		regmap_write(rt5514->i2c_regmap, 0x18002fb0, 0x2);
+	else if (rt5514->sw_boost == 3)
+		regmap_write(rt5514->i2c_regmap, 0x18002fb0, 0x3);
+	else if (rt5514->sw_boost == 4)
+		regmap_write(rt5514->i2c_regmap, 0x18002fb0, 0x4);
+	
+	return 0;
+}
+
 static const struct snd_kcontrol_new rt5514_snd_controls[] = {
 	SOC_DOUBLE_TLV("MIC Boost Volume", RT5514_ANA_CTRL_MICBST,
 		RT5514_SEL_BSTL_SFT, RT5514_SEL_BSTR_SFT, 8, 0, bst_tlv),
@@ -631,6 +670,12 @@ static const struct snd_kcontrol_new rt5514_snd_controls[] = {
 	SOC_DOUBLE_R_TLV("ADC2 Capture Volume", RT5514_DOWNFILTER1_CTRL1,
 		RT5514_DOWNFILTER1_CTRL2, RT5514_AD_GAIN_SFT, 63, 0,
 		adc_vol_tlv),
+	SOC_SINGLE_TLV("CH L Digital Boost Gain", RT5514_DOWNFILTER0_CTRL1,
+			RT5514_D0_LRCH_BOOST_SFT, 3, 0, ch_bst_tlv),
+	SOC_SINGLE_TLV("CH R Digital Boost Gain", RT5514_DOWNFILTER0_CTRL2,
+			RT5514_D0_LRCH_BOOST_SFT, 3, 0, ch_bst_tlv),
+	SOC_ENUM_EXT("SW Boost Gain", rt5514_sw_boost_enum, rt5514_sw_boost_get,
+		rt5514_sw_boost_put),
 	SOC_SINGLE_EXT("DSP Voice Wake Up", SND_SOC_NOPM, 0, 1, 0,
 		rt5514_dsp_voice_wake_up_get, rt5514_dsp_voice_wake_up_put),
 	//SND_SOC_BYTES_TLV("Hotword Model", 0x8504,
