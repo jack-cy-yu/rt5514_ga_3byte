@@ -35,7 +35,7 @@
 #include "rt5514-spi.h"
 #endif
 
-#define VERSION "0.1.13"
+#define VERSION "0.1.14"
 int dsp_idle_mode_on = 0;
 struct snd_soc_codec *global_codec;
 EXPORT_SYMBOL(dsp_idle_mode_on);
@@ -428,7 +428,7 @@ static int rt5514_dsp_enable(struct rt5514_priv *rt5514)
 #if IS_ENABLED(CONFIG_SND_SOC_RT5514_SPI)
 		int ret;
 
-		ret = rt5514_spi_burst_write(0x4ffad000, rt5514->model_buf,
+		ret = rt5514_spi_burst_write(0x4ffab000, rt5514->model_buf,
 			((rt5514->model_len / 8) + 1) * 8);
 		if (ret) {
 			dev_err(codec->dev, "Model load failed %d\n", ret);
@@ -443,7 +443,7 @@ static int rt5514_dsp_enable(struct rt5514_priv *rt5514)
 		ret = request_firmware(&fw, hotword_model_name_para, codec->dev);
 		if (!ret) {
 #if IS_ENABLED(CONFIG_SND_SOC_RT5514_SPI)
-			rt5514_spi_burst_write(0x4ffad000, fw->data, ((fw->size/8)+1)*8);
+			rt5514_spi_burst_write(0x4ffab000, fw->data, ((fw->size/8)+1)*8);
 #else
 			dev_err(codec->dev, "No SPI driver to load fw\n");
 #endif
