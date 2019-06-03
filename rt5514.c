@@ -35,7 +35,7 @@
 #include "rt5514-spi.h"
 #endif
 
-#define VERSION "0.1.14"
+#define VERSION "0.1.15"
 int dsp_idle_mode_on = 0;
 struct snd_soc_codec *global_codec;
 EXPORT_SYMBOL(dsp_idle_mode_on);
@@ -330,8 +330,10 @@ static int rt5514_sw_boost_get(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct rt5514_priv *rt5514 = snd_soc_component_get_drvdata(component);
+	unsigned int val;
 
-	ucontrol->value.integer.value[0] = rt5514->sw_boost;
+	regmap_read(rt5514->i2c_regmap, 0x18002fb0, &val);
+	ucontrol->value.integer.value[0] = val;
 
 	return 0;
 }
